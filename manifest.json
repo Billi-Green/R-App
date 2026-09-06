@@ -1,0 +1,20 @@
+{
+  "id": "rd03d_radar",
+  "name": "RD-03D Radar",
+  "version": "0.1.17",
+  "author": "Billi-Green",
+  "description": "Connect to one or more RD-03D ESP-NOW radar nodes and view a 70-degree 2D radar display with 10m range.",
+  "category": "Tools",
+  "entry": "rd03d_radar.so",
+  "target": "esp32c5",
+  "api_version": 1,
+  "manifest_version": 1,
+  "package_version": 1,
+  "data_version": 1,
+  "storage_scope": "app",
+  "permissions": ["ui", "espnow", "input"],
+  "memory_limit": 49152,
+  "stack_size": 8192,
+  "tick_interval_ms": 16,
+  "requires_psram": false
+}
