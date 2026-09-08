@@ -9,6 +9,7 @@
 #include <string.h>
 
 #define RADAR_MAX_NODES 16
+#define RADAR_MAX_TARGETS 3
 #define RADAR_CHANNEL 1
 #define RADAR_MAX_RANGE_MM 10000
 #define RADAR_RANGE_RINGS 5
@@ -33,6 +34,16 @@ typedef enum {
 } radar_page_t;
 
 typedef struct {
+    bool detected;
+    int32_t x_mm;
+    int32_t y_mm;
+    int32_t speed;
+    int32_t distance_mm;
+    int32_t angle_deg;
+    uint32_t last_data_ms;
+} radar_target_t;
+
+typedef struct {
     bool used;
     bool selected;
     bool streaming;
@@ -42,12 +53,7 @@ typedef struct {
     uint32_t last_peer_ms;
     uint32_t last_data_ms;
     uint32_t sequence;
-    bool detected;
-    int32_t x_mm;
-    int32_t y_mm;
-    int32_t speed;
-    int32_t distance_mm;
-    int32_t angle_deg;
+    radar_target_t targets[RADAR_MAX_TARGETS];
 } radar_node_t;
 
 static const ghostesp_api_t *api;
@@ -60,7 +66,7 @@ static ghostesp_ui_obj_t connect_screen;
 static ghostesp_ui_obj_t radar_screen;
 static ghostesp_ui_obj_t canvas;
 static ghostesp_ui_obj_t sweep_line;
-static ghostesp_ui_obj_t target_marker;
+static ghostesp_ui_obj_t target_markers[RADAR_MAX_TARGETS];
 static ghostesp_ui_obj_t range_labels[RADAR_RANGE_RINGS];
 static ghostesp_ui_obj_t connect_list;
 static ghostesp_ui_obj_t connect_rows[RADAR_MAX_NODES];
@@ -86,9 +92,9 @@ static uint32_t last_announce_ms;
 static bool radar_background_drawn;
 static int32_t radar_canvas_width;
 static int32_t radar_canvas_height;
-static bool marker_visible;
-static int marker_x;
-static int marker_y;
+static bool marker_visible[RADAR_MAX_TARGETS];
+static int marker_x[RADAR_MAX_TARGETS];
+static int marker_y[RADAR_MAX_TARGETS];
 static int sweep_angle_deg;
 static int sweep_direction;
 static uint32_t sweep_elapsed_ms;
@@ -212,7 +218,12 @@ static void delete_screen(void) {
     radar_screen = NULL;
     canvas = NULL;
     sweep_line = NULL;
-    target_marker = NULL;
+    for (int i = 0; i < RADAR_MAX_TARGETS; ++i) {
+        target_markers[i] = NULL;
+        marker_visible[i] = false;
+        marker_x[i] = 0;
+        marker_y[i] = 0;
+    }
     for (int i = 0; i < RADAR_RANGE_RINGS; ++i) range_labels[i] = NULL;
     connect_list = NULL;
     connect_empty_label = NULL;
@@ -235,9 +246,6 @@ static void delete_screen(void) {
     radar_background_drawn = false;
     radar_canvas_width = 0;
     radar_canvas_height = 0;
-    marker_visible = false;
-    marker_x = 0;
-    marker_y = 0;
     sweep_angle_deg = 0;
     sweep_direction = 1;
     sweep_elapsed_ms = 0;
@@ -395,25 +403,28 @@ static bool parse_long_field(char **cursor, long *value) {
 }
 
 static bool parse_telemetry(const char *text, uint32_t *sequence,
-                            bool *detected, int32_t *x, int32_t *y,
-                            int32_t *speed, int32_t *distance, int32_t *angle) {
+                            uint8_t *target_id, bool *detected, int32_t *x,
+                            int32_t *y, int32_t *speed, int32_t *distance,
+                            int32_t *angle) {
     if (!text || strncmp(text, "RADAR,", 6) != 0) return false;
 
     char copy[GHOSTESP_ESPNOW_MESSAGE_MAX];
     snprintf(copy, sizeof(copy), "%s", text + 6);
     char *cursor = copy;
-    long values[7];
-    for (int i = 0; i < 7; ++i) {
+    long values[8];
+    for (int i = 0; i < 8; ++i) {
         if (!parse_long_field(&cursor, &values[i])) return false;
     }
 
     *sequence = (uint32_t)values[0];
-    *detected = values[1] != 0;
-    *x = (int32_t)values[2];
-    *y = (int32_t)values[3];
-    *speed = (int32_t)values[4];
-    *distance = (int32_t)values[5];
-    *angle = (int32_t)values[6];
+    if (values[1] < 0 || values[1] >= RADAR_MAX_TARGETS) return false;
+    *target_id = (uint8_t)values[1];
+    *detected = values[2] != 0;
+    *x = (int32_t)values[3];
+    *y = (int32_t)values[4];
+    *speed = (int32_t)values[5];
+    *distance = (int32_t)values[6];
+    *angle = (int32_t)values[7];
     return true;
 }
 
@@ -443,19 +454,22 @@ static void drain_messages(void) {
         }
 
         uint32_t sequence;
+        uint8_t target_id;
         bool detected;
         int32_t x, y, speed, distance, angle;
-        if (!parse_telemetry(message.text, &sequence, &detected, &x, &y,
-                             &speed, &distance, &angle)) {
+        if (!parse_telemetry(message.text, &sequence, &target_id, &detected,
+                             &x, &y, &speed, &distance, &angle)) {
             continue;
         }
+        radar_target_t *target = &nodes[index].targets[target_id];
         nodes[index].sequence = sequence;
-        nodes[index].detected = detected;
-        nodes[index].x_mm = x;
-        nodes[index].y_mm = y;
-        nodes[index].speed = speed;
-        nodes[index].distance_mm = distance;
-        nodes[index].angle_deg = angle;
+        target->detected = detected;
+        target->x_mm = x;
+        target->y_mm = y;
+        target->speed = speed;
+        target->distance_mm = distance;
+        target->angle_deg = angle;
+        target->last_data_ms = now_ms();
         nodes[index].last_data_ms = now_ms();
         nodes[index].last_peer_ms = nodes[index].last_data_ms;
     }
@@ -935,54 +949,63 @@ static void advance_sweep(uint32_t elapsed_ms) {
 }
 
 static void update_radar_marker(void) {
-    if (!canvas || !target_marker || !api->ui_line_set_points) return;
+    if (!canvas || !api->ui_line_set_points) return;
     draw_radar_background();
 
     int index = selected_node_at(view_slot);
-    bool visible = false;
-    int px = 0;
-    int py = 0;
-    if (index >= 0) {
-        radar_node_t *node = &nodes[index];
-        uint32_t now = now_ms();
-        bool fresh = node->last_data_ms && now - node->last_data_ms <= RADAR_DATA_TIMEOUT_MS;
-        if (fresh && node->detected) {
-            int cx, cy, radius;
-            get_radar_geometry(&cx, &cy, &radius);
-            int width = radar_canvas_width;
-            int height = radar_canvas_height;
-            px = cx - (node->x_mm * radius / RADAR_MAX_RANGE_MM);
-            py = cy - (node->y_mm * radius / RADAR_MAX_RANGE_MM);
-            if (px < 5) px = 5;
-            if (px > width - 6) px = width - 6;
-            if (py < 5) py = 5;
-            if (py > height - 6) py = height - 6;
-            visible = true;
+    uint32_t now = now_ms();
+    int cx = 0;
+    int cy = 0;
+    int radius = 0;
+    get_radar_geometry(&cx, &cy, &radius);
+
+    for (int target_id = 0; target_id < RADAR_MAX_TARGETS; ++target_id) {
+        ghostesp_ui_obj_t marker = target_markers[target_id];
+        bool visible = false;
+        int px = 0;
+        int py = 0;
+
+        if (index >= 0) {
+            radar_target_t *target = &nodes[index].targets[target_id];
+            bool fresh = target->last_data_ms &&
+                         now - target->last_data_ms <= RADAR_DATA_TIMEOUT_MS;
+            if (fresh && target->detected) {
+                int width = radar_canvas_width;
+                int height = radar_canvas_height;
+                px = cx - (target->x_mm * radius / RADAR_MAX_RANGE_MM);
+                py = cy - (target->y_mm * radius / RADAR_MAX_RANGE_MM);
+                if (px < 5) px = 5;
+                if (px > width - 6) px = width - 6;
+                if (py < 5) py = 5;
+                if (py > height - 6) py = height - 6;
+                visible = true;
+            }
         }
-    }
 
-    if (!visible) {
-        if (marker_visible && api->ui_obj_set_visible)
-            api->ui_obj_set_visible(target_marker, false);
-        marker_visible = false;
-        return;
-    }
+        if (!visible || !marker) {
+            if (marker_visible[target_id] && marker && api->ui_obj_set_visible)
+                api->ui_obj_set_visible(marker, false);
+            marker_visible[target_id] = false;
+            continue;
+        }
 
-    if (!marker_visible || marker_x != px || marker_y != py) {
-        ghostesp_point_t points[5] = {
-            {px - 4, py - 4},
-            {px + 4, py - 4},
-            {px + 4, py + 4},
-            {px - 4, py + 4},
-            {px - 4, py - 4},
-        };
-        api->ui_line_set_points(target_marker, points, 5);
-        marker_x = px;
-        marker_y = py;
+        if (!marker_visible[target_id] || marker_x[target_id] != px ||
+            marker_y[target_id] != py) {
+            ghostesp_point_t points[5] = {
+                {px - 4, py - 4},
+                {px + 4, py - 4},
+                {px + 4, py + 4},
+                {px - 4, py + 4},
+                {px - 4, py - 4},
+            };
+            api->ui_line_set_points(marker, points, 5);
+            marker_x[target_id] = px;
+            marker_y[target_id] = py;
+        }
+        if (!marker_visible[target_id] && api->ui_obj_set_visible)
+            api->ui_obj_set_visible(marker, true);
+        marker_visible[target_id] = true;
     }
-    if (!marker_visible && api->ui_obj_set_visible)
-        api->ui_obj_set_visible(target_marker, true);
-    marker_visible = true;
 }
 
 static void draw_radar(void) {
@@ -1009,9 +1032,18 @@ static void update_radar_labels(void) {
     radar_node_t *node = &nodes[index];
 
     char header[64];
-    char data[96];
-    uint32_t age = node->last_data_ms ? now_ms() - node->last_data_ms : UINT32_MAX;
-    if (!node->detected || age > RADAR_DATA_TIMEOUT_MS) {
+    char data[160];
+    uint32_t now = now_ms();
+    int detected_count = 0;
+    for (int target_id = 0; target_id < RADAR_MAX_TARGETS; ++target_id) {
+        radar_target_t *target = &node->targets[target_id];
+        if (target->detected && target->last_data_ms &&
+            now - target->last_data_ms <= RADAR_DATA_TIMEOUT_MS) {
+            ++detected_count;
+        }
+    }
+
+    if (detected_count == 0) {
         if (radar_label && api->ui_label_set_text)
             snprintf(header, sizeof(header), narrow ? "No target %d/%d" :
                      "No target  |  Radar %d/%d", view_slot + 1, total);
@@ -1019,12 +1051,26 @@ static void update_radar_labels(void) {
                  "Range 2  4  6  8  10  |  FOV 70 deg");
     } else {
         if (radar_label && api->ui_label_set_text)
-            snprintf(header, sizeof(header), narrow ? "Target %d/%d" :
-                     "Target  |  Radar %d/%d", view_slot + 1, total);
-        snprintf(data, sizeof(data), narrow ? "%ldmm %lddeg" :
-                 "%ld mm  %ld deg  %ld mm/s  |  FOV 70 deg",
-                 (long)node->distance_mm, (long)node->angle_deg,
-                 (long)node->speed);
+            snprintf(header, sizeof(header), narrow ? "%d targets %d/%d" :
+                     "%d targets  |  Radar %d/%d", detected_count,
+                     view_slot + 1, total);
+
+        size_t used = (size_t)snprintf(data, sizeof(data), "%d target%s",
+                                       detected_count,
+                                       detected_count == 1 ? "" : "s");
+        for (int target_id = 0; target_id < RADAR_MAX_TARGETS; ++target_id) {
+            radar_target_t *target = &node->targets[target_id];
+            if (!target->detected || !target->last_data_ms ||
+                now - target->last_data_ms > RADAR_DATA_TIMEOUT_MS) {
+                continue;
+            }
+            if (used < sizeof(data)) {
+                used += (size_t)snprintf(
+                    data + used, sizeof(data) - used, "  T%d:%ldmm/%lddeg",
+                    target_id + 1, (long)target->distance_mm,
+                    (long)target->angle_deg);
+            }
+        }
     }
     if (radar_label && api->ui_label_set_text)
         api->ui_label_set_text(radar_label, header);
@@ -1117,14 +1163,17 @@ static void show_radar(void) {
                 if (api->ui_obj_set_visible)
                     api->ui_obj_set_visible(sweep_line, false);
             }
-            target_marker = api->ui_line_create(canvas);
-            if (target_marker) {
-                if (api->ui_line_set_color)
-                    api->ui_line_set_color(target_marker, RADAR_TARGET_RED);
-                if (api->ui_line_set_width)
-                    api->ui_line_set_width(target_marker, 2);
-                if (api->ui_obj_set_visible)
-                    api->ui_obj_set_visible(target_marker, false);
+            for (int target_id = 0; target_id < RADAR_MAX_TARGETS; ++target_id) {
+                target_markers[target_id] = api->ui_line_create(canvas);
+                if (target_markers[target_id]) {
+                    if (api->ui_line_set_color)
+                        api->ui_line_set_color(target_markers[target_id],
+                                               RADAR_TARGET_RED);
+                    if (api->ui_line_set_width)
+                        api->ui_line_set_width(target_markers[target_id], 2);
+                    if (api->ui_obj_set_visible)
+                        api->ui_obj_set_visible(target_markers[target_id], false);
+                }
             }
         }
         if (canvas && api->ui_label_create) {

@@ -20,5 +20,7 @@ Keep the bundled files under `sdk/` in source control so catalog CI can build th
 The app expects telemetry in this format:
 
 ```text
-RADAR,sequence,detected,x_mm,y_mm,speed,distance_mm,angle_deg
+RADAR,sequence,target_id,detected,x_mm,y_mm,speed,distance_mm,angle_deg
 ```
+
+Each radar node sends one record for each of its three RD-03D target slots.
