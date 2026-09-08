@@ -10,12 +10,13 @@
 
 #define RADAR_MAX_NODES 16
 #define RADAR_MAX_TARGETS 3
+#define RADAR_CONNECT_ROW_POOL 2
 #define RADAR_CHANNEL 1
-#define RADAR_MAX_RANGE_MM 10000
-#define RADAR_RANGE_RINGS 5
-#define RADAR_HALF_ANGLE_DEG 35
-#define RADAR_CONE_SIN_MILLI 574
-#define RADAR_CONE_COS_MILLI 819
+#define RADAR_MAX_RANGE_MM 8000
+#define RADAR_RANGE_RINGS 4
+#define RADAR_HALF_ANGLE_DEG 40
+#define RADAR_CONE_SIN_MILLI 643
+#define RADAR_CONE_COS_MILLI 766
 #define RADAR_SWEEP_STEP_MS 16
 #define RADAR_SWEEP_STEP_DEG 1
 #define RADAR_DATA_TIMEOUT_MS 1200
@@ -462,6 +463,8 @@ static void drain_messages(void) {
             continue;
         }
         radar_target_t *target = &nodes[index].targets[target_id];
+        uint32_t received_ms = now_ms();
+
         nodes[index].sequence = sequence;
         target->detected = detected;
         target->x_mm = x;
@@ -469,9 +472,9 @@ static void drain_messages(void) {
         target->speed = speed;
         target->distance_mm = distance;
         target->angle_deg = angle;
-        target->last_data_ms = now_ms();
-        nodes[index].last_data_ms = now_ms();
-        nodes[index].last_peer_ms = nodes[index].last_data_ms;
+        target->last_data_ms = received_ms;
+        nodes[index].last_data_ms = received_ms;
+        nodes[index].last_peer_ms = received_ms;
     }
 }
 
@@ -594,7 +597,8 @@ static void update_node_button(int index) {
 }
 
 static void add_node_row(ghostesp_ui_obj_t parent, int index) {
-    if (index < 0 || index >= node_count || !nodes[index].used) return;
+    if (index < 0 || index >= RADAR_MAX_NODES) return;
+    bool active = index < node_count && nodes[index].used;
 
     char label[80];
     format_node_label(index, label, sizeof(label));
@@ -604,29 +608,34 @@ static void add_node_row(ghostesp_ui_obj_t parent, int index) {
         connect_rows[index] = NULL;
         connect_buttons[index] = add_button(parent, label, toggle_node,
                                             (void *)(intptr_t)index);
-        style_node_button(connect_buttons[index], nodes[index].selected);
+        style_node_button(connect_buttons[index], active && nodes[index].selected);
+        if (!active && connect_buttons[index] && api->ui_obj_set_visible)
+            api->ui_obj_set_visible(connect_buttons[index], false);
+        connect_row_visible[index] = active;
         return;
     }
     connect_rows[index] = row;
-    connect_row_visible[index] = true;
+    connect_row_visible[index] = active;
+    if (!active && api->ui_obj_set_visible)
+        api->ui_obj_set_visible(row, false);
     if (api->ui_obj_set_bg_color) api->ui_obj_set_bg_color(row, theme.surface);
     if (api->ui_obj_set_border_color) api->ui_obj_set_border_color(row, theme.surface_alt);
     if (api->ui_obj_set_border_width) api->ui_obj_set_border_width(row, 1);
-    if (api->ui_obj_set_radius) api->ui_obj_set_radius(row, 7);
-    if (api->ui_obj_set_pad) api->ui_obj_set_pad(row, 4, 4, 1, 1);
+    if (api->ui_obj_set_radius) api->ui_obj_set_radius(row, 10);
+    if (api->ui_obj_set_pad) api->ui_obj_set_pad(row, 5, 5, 2, 2);
     if (api->ui_obj_set_pad_row) api->ui_obj_set_pad_row(row, 0);
     if (api->ui_obj_set_scrollable) api->ui_obj_set_scrollable(row, false);
     if (api->ui_obj_set_flex_flow)
         api->ui_obj_set_flex_flow(row, GHOSTESP_FLEX_FLOW_ROW);
     if (api->ui_obj_set_pad_column) api->ui_obj_set_pad_column(row, 4);
 
-    bool connected = node_is_connected(&nodes[index]);
+    bool connected = active && node_is_connected(&nodes[index]);
     ghostesp_ui_obj_t check_slot = api->ui_card_create ? api->ui_card_create(row) : NULL;
     if (check_slot) {
         style_flat_container(check_slot, GHOSTESP_FLEX_FLOW_ROW);
         if (api->ui_obj_set_bg_color) api->ui_obj_set_bg_color(check_slot, theme.surface);
-        if (api->ui_obj_set_width) api->ui_obj_set_width(check_slot, 24);
-        if (api->ui_obj_set_height) api->ui_obj_set_height(check_slot, 24);
+        if (api->ui_obj_set_width) api->ui_obj_set_width(check_slot, 28);
+        if (api->ui_obj_set_height) api->ui_obj_set_height(check_slot, 28);
     }
     ghostesp_ui_obj_t check = NULL;
     if (check_slot && api->ui_line_create && api->ui_line_set_points) {
@@ -647,7 +656,7 @@ static void add_node_row(ghostesp_ui_obj_t parent, int index) {
                           connected ? RADAR_CHECK_FALLBACK : " ",
                           GHOSTESP_FONT_BODY,
                           connected ? RADAR_CONNECTED_GREEN : theme.text_muted);
-        if (check && api->ui_obj_set_width) api->ui_obj_set_width(check, 24);
+        if (check && api->ui_obj_set_width) api->ui_obj_set_width(check, 28);
         connect_check_is_line[index] = false;
     }
     connect_checks[index] = check;
@@ -663,28 +672,28 @@ static void add_node_row(ghostesp_ui_obj_t parent, int index) {
         if (button_width < 32) button_width = 32;
         api->ui_obj_set_width(button, button_width);
         if (api->ui_obj_set_height) {
-            api->ui_obj_set_height(button, layout.compact ? 24 : 26);
-            api->ui_obj_set_height(row, layout.compact ? 26 : 28);
+            api->ui_obj_set_height(button, layout.compact ? 28 : 30);
+            api->ui_obj_set_height(row, layout.compact ? 32 : 34);
         }
-        style_node_button(button, nodes[index].selected);
+        style_node_button(button, active && nodes[index].selected);
     }
 }
 
 static void refresh_connect_rows(void) {
-    if (!connect_list) return;
+    if (!connect_list && !connect_screen) return;
 
-    for (int i = 0; i < node_count && i < connect_rendered_count; ++i) {
-        if (connect_rows[i] && !connect_row_visible[i] && api->ui_obj_set_visible) {
-            api->ui_obj_set_visible(connect_rows[i], true);
-            connect_row_visible[i] = true;
+    for (int i = 0; i < RADAR_MAX_NODES; ++i) {
+        bool active = i < node_count && nodes[i].used;
+        if (connect_rows[i] && connect_row_visible[i] != active &&
+            api->ui_obj_set_visible) {
+            api->ui_obj_set_visible(connect_rows[i], active);
+            connect_row_visible[i] = active;
         }
-        update_node_button(i);
-    }
-    for (int i = node_count; i < connect_rendered_count; ++i) {
-        if (connect_rows[i] && connect_row_visible[i] && api->ui_obj_set_visible) {
-            api->ui_obj_set_visible(connect_rows[i], false);
-            connect_row_visible[i] = false;
+        if (connect_buttons[i] && !connect_rows[i] &&
+            api->ui_obj_set_visible) {
+            api->ui_obj_set_visible(connect_buttons[i], active);
         }
+        if (active) update_node_button(i);
     }
     for (int i = connect_rendered_count; i < node_count; ++i)
         add_node_row(connect_list, i);
@@ -768,10 +777,10 @@ static void show_connect_page(void) {
     connect_empty_visible = node_count == 0;
     if (connect_empty_label && api->ui_obj_set_visible && !connect_empty_visible)
         api->ui_obj_set_visible(connect_empty_label, false);
-    for (int i = 0; i < node_count; ++i) {
+    for (int i = 0; i < RADAR_CONNECT_ROW_POOL; ++i) {
         add_node_row(list_parent, i);
     }
-    connect_rendered_count = node_count;
+    connect_rendered_count = RADAR_CONNECT_ROW_POOL;
 
     if (action_row) {
         ghostesp_ui_obj_t actions = api->ui_card_create(screen);
@@ -818,14 +827,14 @@ static const int16_t radar_sweep_sin_milli[RADAR_HALF_ANGLE_DEG + 1] = {
     0, 17, 35, 52, 70, 87, 105, 122, 139, 156, 174,
     191, 208, 225, 242, 259, 276, 292, 309, 326, 342,
     358, 375, 391, 407, 423, 438, 454, 469, 485, 500,
-    515, 530, 545, 559, 574,
+    515, 530, 545, 559, 574, 588, 602, 616, 629, 643,
 };
 
 static const int16_t radar_sweep_cos_milli[RADAR_HALF_ANGLE_DEG + 1] = {
     1000, 1000, 999, 999, 998, 996, 995, 993, 990, 988, 985,
     982, 978, 974, 970, 966, 961, 956, 951, 946, 940,
     934, 927, 921, 914, 906, 899, 891, 883, 875, 866,
-    857, 848, 839, 829, 819,
+    857, 848, 839, 829, 819, 809, 799, 788, 777, 766,
 };
 
 static void get_radar_geometry(int *cx, int *cy, int *radius) {
@@ -834,7 +843,7 @@ static void get_radar_geometry(int *cx, int *cy, int *radius) {
     *cx = width / 2;
     *cy = height - 2;
 
-    /* Size the narrower 70-degree cone from its actual footprint and use
+    /* Size the 80-degree cone from its actual footprint and use
      * nearly all of the available vertical canvas. */
     int by_height = height - 4;
     int by_width = width * 1000 / (RADAR_CONE_SIN_MILLI * 2) - 2;
@@ -849,7 +858,7 @@ static void position_range_labels(void) {
     for (int i = 0; i < RADAR_RANGE_RINGS; ++i) {
         if (!range_labels[i]) continue;
         int ring_radius = radius * (i + 1) / RADAR_RANGE_RINGS;
-        int label_width = i == RADAR_RANGE_RINGS - 1 ? 24 : 16;
+        int label_width = 24;
         int label_offset = i == RADAR_RANGE_RINGS - 2 ? 18 : 10;
         int x = cx + ring_radius * RADAR_CONE_SIN_MILLI / 1000 + label_offset;
         if (i == RADAR_RANGE_RINGS - 2)
@@ -972,7 +981,7 @@ static void update_radar_marker(void) {
             if (fresh && target->detected) {
                 int width = radar_canvas_width;
                 int height = radar_canvas_height;
-                px = cx - (target->x_mm * radius / RADAR_MAX_RANGE_MM);
+                px = cx + (target->x_mm * radius / RADAR_MAX_RANGE_MM);
                 py = cy - (target->y_mm * radius / RADAR_MAX_RANGE_MM);
                 if (px < 5) px = 5;
                 if (px > width - 6) px = width - 6;
@@ -1014,6 +1023,14 @@ static void draw_radar(void) {
     update_radar_marker();
 }
 
+static void format_meters(char *out, size_t out_len, int32_t millimeters) {
+    int32_t value = millimeters;
+    bool negative = value < 0;
+    if (negative) value = -value;
+    snprintf(out, out_len, "%s%ld.%02ldm", negative ? "-" : "",
+             (long)(value / 1000), (long)((value % 1000) / 10));
+}
+
 static void update_radar_labels(void) {
     int total = selected_count();
     bool narrow = layout.content_w < 180;
@@ -1032,7 +1049,7 @@ static void update_radar_labels(void) {
     radar_node_t *node = &nodes[index];
 
     char header[64];
-    char data[160];
+    char data[256];
     uint32_t now = now_ms();
     int detected_count = 0;
     for (int target_id = 0; target_id < RADAR_MAX_TARGETS; ++target_id) {
@@ -1044,33 +1061,47 @@ static void update_radar_labels(void) {
     }
 
     if (detected_count == 0) {
-        if (radar_label && api->ui_label_set_text)
+        if (radar_label && api->ui_label_set_text) {
             snprintf(header, sizeof(header), narrow ? "No target %d/%d" :
                      "No target  |  Radar %d/%d", view_slot + 1, total);
-        snprintf(data, sizeof(data), narrow ? "2 4 6 8 10 | 70deg" :
-                 "Range 2  4  6  8  10  |  FOV 70 deg");
+        }
+        snprintf(data, sizeof(data), narrow ? "2m 4m 6m 8m | 80deg" :
+                 "Range 2m  4m  6m  8m  |  FOV 80 deg");
     } else {
         if (radar_label && api->ui_label_set_text)
             snprintf(header, sizeof(header), narrow ? "%d targets %d/%d" :
                      "%d targets  |  Radar %d/%d", detected_count,
                      view_slot + 1, total);
 
-        size_t used = (size_t)snprintf(data, sizeof(data), "%d target%s",
-                                       detected_count,
-                                       detected_count == 1 ? "" : "s");
+        size_t used = 0;
         for (int target_id = 0; target_id < RADAR_MAX_TARGETS; ++target_id) {
             radar_target_t *target = &node->targets[target_id];
             if (!target->detected || !target->last_data_ms ||
                 now - target->last_data_ms > RADAR_DATA_TIMEOUT_MS) {
                 continue;
             }
-            if (used < sizeof(data)) {
-                used += (size_t)snprintf(
-                    data + used, sizeof(data) - used, "  T%d:%ldmm/%lddeg",
-                    target_id + 1, (long)target->distance_mm,
-                    (long)target->angle_deg);
+            if (used >= sizeof(data)) break;
+            char distance[20];
+            char x[20];
+            char y[20];
+            format_meters(distance, sizeof(distance), target->distance_mm);
+            format_meters(x, sizeof(x), target->x_mm);
+            format_meters(y, sizeof(y), target->y_mm);
+            int written = snprintf(
+                data + used, sizeof(data) - used,
+                narrow ? "Target%d S:%ld D:%s A:%ld\n" :
+                         "Target%d S:%ld D:%s A:%ld X:%s Y:%s\n",
+                target_id + 1, (long)target->speed, distance,
+                (long)target->angle_deg, x, y);
+            if (written < 0) break;
+            if ((size_t)written >= sizeof(data) - used) {
+                used = sizeof(data) - 1;
+                break;
             }
+            used += (size_t)written;
         }
+        if (used > 0 && used < sizeof(data) && data[used - 1] == '\n')
+            data[used - 1] = '\0';
     }
     if (radar_label && api->ui_label_set_text)
         api->ui_label_set_text(radar_label, header);
@@ -1122,13 +1153,14 @@ static void show_radar(void) {
     int32_t width = layout.content_w - margin * 2;
     if (width < 40) width = 40;
     int32_t header_height = tiny ? 14 : 16;
+    int32_t data_height = tiny ? 14 : 48;
     int32_t nav_button_height = narrow ? (layout.compact ? 22 : 26) : 30;
     int32_t nav_height = narrow ? nav_button_height * 2 + gap : nav_button_height;
-    int32_t canvas_y = header_height + gap;
+    int32_t canvas_y = header_height + gap + data_height + gap;
     int32_t canvas_height = layout.content_h - canvas_y - nav_height - gap - margin;
     if (canvas_height < 32 && !tiny) {
         header_height = 14;
-        canvas_y = header_height + gap;
+        canvas_y = header_height + gap + data_height + gap;
         canvas_height = layout.content_h - canvas_y - nav_height - gap - margin;
     }
     if (canvas_height < 24) canvas_height = 24;
@@ -1147,7 +1179,9 @@ static void show_radar(void) {
         if (api->ui_obj_set_size)
             api->ui_obj_set_size(radar_label, width, header_height);
     }
-    radar_data_label = NULL;
+    radar_data_label = add_label(screen, "", GHOSTESP_FONT_MICRO, theme.text_muted);
+    if (radar_data_label && api->ui_obj_set_size)
+        api->ui_obj_set_size(radar_data_label, width, data_height);
 
     if (api->ui_canvas_create) {
         canvas = api->ui_canvas_create(screen, width, canvas_height);
@@ -1177,14 +1211,14 @@ static void show_radar(void) {
             }
         }
         if (canvas && api->ui_label_create) {
+            static const char *range_texts[RADAR_RANGE_RINGS] = {
+                "2m", "4m", "6m", "8m",
+            };
             for (int i = 0; i < RADAR_RANGE_RINGS; ++i) {
-                char range_text[8];
-                snprintf(range_text, sizeof(range_text), "%d", (i + 1) * 2);
-                range_labels[i] = add_label(canvas, range_text,
+                range_labels[i] = add_label(canvas, range_texts[i],
                                             GHOSTESP_FONT_MICRO, RADAR_CONE_GREEN);
                 if (range_labels[i] && api->ui_obj_set_width)
-                    api->ui_obj_set_width(range_labels[i],
-                                          i == RADAR_RANGE_RINGS - 1 ? 24 : 16);
+                    api->ui_obj_set_width(range_labels[i], 24);
             }
         }
     }

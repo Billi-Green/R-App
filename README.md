@@ -3,7 +3,9 @@
 Native GhostESP C5 app for discovering RD-03D radar nodes over ESP-NOW.
 
 The app provides a `Connect` screen for ready radar discovery and multi-select,
-plus a `Radar` screen with a 70-degree 2D field-of-view display and 10m range.
+plus a `Radar` screen with an 80-degree 2D field-of-view display and 8m range.
+The view matches the datasheet's orientation (a): positive azimuth is shown
+to the left and negative azimuth to the right.
 
 ## Build
 
@@ -24,3 +26,5 @@ RADAR,sequence,target_id,detected,x_mm,y_mm,speed,distance_mm,angle_deg
 ```
 
 Each radar node sends one record for each of its three RD-03D target slots.
+
+Raw multi-target slots are displayed directly from the RD-03D telemetry.
